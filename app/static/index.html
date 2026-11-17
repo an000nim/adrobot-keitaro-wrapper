@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Adrobot · Кампании Keitaro</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">adrobot<span> / Keitaro</span></a>
+    <a href="/docs" target="_blank" rel="noopener">API приложения ↗</a>
+  </header>
+  <main>
+    <div class="heading">
+      <div><p class="eyebrow">Управление трафиком</p><h1>Кампании</h1></div>
+      <p id="connection" role="status">Подключаемся к Keitaro…</p>
+    </div>
+    <div id="message" role="alert" hidden></div>
+    <section class="workspace">
+      <aside class="panel">
+        <h2>Новая кампания</h2>
+        <form id="create-form">
+          <label>Название<input id="name" required maxlength="200" autocomplete="off"></label>
+          <label>Страны для Google<input id="geo" required placeholder="AU, MX, RO" autocomplete="off"></label>
+          <p class="hint">Коды ISO из двух букв через запятую. Остальные страны попадут на оффер.</p>
+          <label>Оффер<input id="create-offer" list="offers-list" required inputmode="numeric" placeholder="ID или выбор из списка"></label>
+          <label>Домен<select id="domain" required></select></label>
+          <label>Группа<select id="group" required></select></label>
+          <label>Источник<select id="source" required></select></label>
+          <button class="primary wide" type="submit">Создать кампанию</button>
+        </form>
+      </aside>
+      <div class="editor">
+        <section class="panel">
+          <h2>Редактор кампании</h2>
+          <form id="open-form" class="inline">
+            <label class="grow">Название или ID<input id="campaign-id" list="campaigns-list" required inputmode="numeric" placeholder="Выберите кампанию или введите ID"></label>
+            <button class="primary" type="submit">Открыть</button>
+          </form>
+        </section>
+        <section id="campaign-section" hidden>
+          <div class="campaign-heading">
+            <div><p id="campaign-number" class="eyebrow"></p><h2 id="campaign-name"></h2></div>
+            <a id="admin-link" target="_blank" rel="noopener">В Keitaro ↗</a>
+          </div>
+          <a id="campaign-link" class="tracking" target="_blank" rel="noopener"></a>
+          <div class="toolbar">
+            <button id="fetch" type="button">Загрузить потоки</button>
+            <label class="check"><input id="show-removed" type="checkbox">Показать удалённые</label>
+          </div>
+          <p id="stats-status" class="hint" role="status"></p>
+          <div id="streams"></div>
+        </section>
+        <div id="empty" class="empty"><div class="empty-icon">↗</div><h2>Выберите кампанию</h2><p>Загрузите её потоки, чтобы изменить офферы и распределение трафика.</p></div>
+      </div>
+    </section>
+    <datalist id="offers-list"></datalist>
+    <datalist id="campaigns-list"></datalist>
+  </main>
+</body>
+</html>
