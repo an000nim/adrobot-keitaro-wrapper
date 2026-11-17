@@ -102,7 +102,7 @@ def test_creation_geo_order_and_idempotency(client):
     assert fake.campaign_rows[0]["state"] == "disabled"
     first, second = fake.stream_rows.values()
     assert first["position"] == 1 and first["filters"][0]["payload"] == ["AU", "MX"]
-    assert first["action_options"]["url"] == "https://google.com"
+    assert first["action_payload"] == "https://google.com"
     assert second["type"] == "default" and second["offers"][0]["share"] == 100
     assert fake.calls[-1][2] == {"state": "active"}
     data["name"] += "changed"
@@ -117,6 +117,24 @@ def test_recovery_after_lost_create_response(client):
     assert client.post("/api/campaigns", json=data).status_code == 200
     assert len(fake.campaign_rows) == 1
     assert len(fake.stream_rows) == 2
+
+
+def test_campaign_stays_disabled_if_keitaro_does_not_persist_google_url(client, monkeypatch):
+    client, fake = client
+    original = fake.request
+
+    def ignore_url(method, path, **kwargs):
+        if path.startswith("streams") and method in {"POST", "PUT"}:
+            kwargs["json"] = {key: value for key, value in kwargs["json"].items() if key != "action_payload"}
+        return original(method, path, **kwargs)
+
+    monkeypatch.setattr(fake, "request", ignore_url)
+    response, _ = create(client)
+    assert response.status_code == 502
+    assert not any(
+        method == "PUT" and path.startswith("campaigns/") and data.get("state") == "active"
+        for method, path, data in fake.calls
+    )
 
 
 @pytest.mark.parametrize("changes", [
@@ -196,3 +214,52 @@ def test_retry_after_successful_put_but_lost_response(client):
     response = client.post("/api/campaigns/1/streams/10/push", json={"revision": draft["revision"]})
     assert response.status_code == 200 and not response.json()["dirty"]
     assert not any(method == "PUT" for method, _, _ in fake.calls)
+
+
+def test_refresh_updates_clean_stream_and_keeps_removed_history(client):
+    client, fake = client
+    draft = load_draft(client, fake, [
+        {"offer_id": 10, "share": 100, "state": "active"},
+        {"offer_id": 20, "share": 0, "state": "disabled"},
+    ])
+    fake.stream_rows[10]["name"] = "Updated in Keitaro"
+    fake.stream_rows[10]["offers"] = [
+        {"offer_id": 10, "share": 60, "state": "active"},
+        {"offer_id": 30, "share": 40, "state": "active"},
+    ]
+    refreshed = client.get("/api/campaigns/1/streams").json()[0]
+    assert refreshed["stream"]["name"] == "Updated in Keitaro"
+    assert refreshed["revision"] == draft["revision"] + 1
+    assert not refreshed["dirty"] and not refreshed["conflict"]
+    assert [(row["offer_id"], row["share"]) for row in refreshed["offers"]] == [(10, 60), (30, 40), (20, 0)]
+
+
+def test_refresh_preserves_dirty_draft_and_reports_conflict(client):
+    client, fake = client
+    draft = load_draft(client, fake)
+    draft = edit(client, draft, "add", 20).json()
+    fake.stream_rows[10]["name"] = "Changed in Keitaro"
+    refreshed = client.get("/api/campaigns/1/streams").json()[0]
+    assert refreshed["offers"] == draft["offers"]
+    assert refreshed["revision"] == draft["revision"]
+    assert refreshed["dirty"] and refreshed["conflict"]
+
+
+def test_preview_supports_local_and_external_offers(client, monkeypatch):
+    client, fake = client
+    monkeypatch.setattr(main.settings, "keitaro_url", "https://tracker.example")
+    monkeypatch.setattr(fake, "request", lambda *args, **kwargs: {
+        "offer_type": "local", "local_path": "/lander/example/",
+    })
+    response = client.get("/api/offers/10/preview", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "https://tracker.example/lander/example/"
+    monkeypatch.setattr(fake, "request", lambda *args, **kwargs: {
+        "offer_type": "external", "action_payload": "https://offer.example/",
+    })
+    response = client.get("/api/offers/10/preview", follow_redirects=False)
+    assert response.headers["location"] == "https://offer.example/"
+    monkeypatch.setattr(fake, "request", lambda *args, **kwargs: {
+        "offer_type": "external", "action_payload": "javascript:alert(1)",
+    })
+    assert client.get("/api/offers/10/preview").status_code == 422

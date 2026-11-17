@@ -6,14 +6,14 @@ import json
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import pycountry
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
 
 from .config import settings
 from .db import Session
@@ -219,7 +219,7 @@ def create_campaign(body: CreateCampaign):
                 kt.request("POST", "streams", json={
                     "campaign_id": campaign_id, "name": "Flow 1 · Google",
                     "position": 1, "type": "regular", "schema": "redirect",
-                    "action_type": "http", "action_options": {"url": "https://google.com"},
+                    "action_type": "http", "action_payload": "https://google.com",
                     "collect_clicks": True,
                     "filters": [{"name": "country", "mode": "accept", "payload": body.geo}],
                 })
@@ -230,6 +230,21 @@ def create_campaign(body: CreateCampaign):
                     "action_type": "http", "collect_clicks": True,
                     "offers": [{"offer_id": body.offer_id, "share": 100, "state": "active"}],
                 })
+            configured = {
+                stream["name"]: stream for stream in kt.streams(campaign_id)
+                if stream.get("state") != "deleted"
+            }
+            google = configured["Flow 1 · Google"]
+            offer_stream = configured["Flow 2 · Offers"]
+            if google.get("action_payload") != "https://google.com":
+                # Older unfinished attempts may have stored the URL in the wrong field.
+                kt.request("PUT", f"streams/{google['id']}", json={"action_payload": "https://google.com"})
+                google = kt.request("GET", f"streams/{google['id']}")
+            if (
+                google.get("action_payload") != "https://google.com"
+                or remote_offers(offer_stream) != [{"offer_id": body.offer_id, "share": 100, "state": "active"}]
+            ):
+                raise HTTPException(502, "Keitaro не подтвердил URL Google или выбранный оффер. Кампания оставлена выключенной.")
             kt.request("PUT", f"campaigns/{campaign_id}", json={"state": "active"})
             operation.status = "complete"
             operation.error = None
@@ -254,9 +269,9 @@ def campaign(campaign_id: int):
 
 @app.get("/api/campaigns/{campaign_id}/streams")
 def streams(campaign_id: int):
-    remote = kt.streams(campaign_id)
     views = []
     with write_session() as session:
+        remote = kt.streams(campaign_id)
         for stream in remote:
             if stream.get("state") == "deleted":
                 continue
@@ -267,10 +282,46 @@ def streams(campaign_id: int):
                     baseline=stream, offers=new_offers(stream), revision=1,
                 )
                 session.add(draft)
+            elif (
+                not draft_view(draft)["dirty"]
+                and fingerprint(stream) != fingerprint(draft.baseline)
+            ):
+                previous = {row["offer_id"]: row for row in draft.offers}
+                refreshed = new_offers(stream)
+                for row in refreshed:
+                    old = previous.get(row["offer_id"])
+                    row["pinned"] = bool(
+                        old and old["pinned"] and not row["removed"]
+                        and old["share"] == row["share"]
+                    )
+                current_ids = {row["offer_id"] for row in refreshed}
+                refreshed.extend(
+                    row for row in draft.offers
+                    if row["removed"] and row["offer_id"] not in current_ids
+                )
+                draft.baseline = stream
+                draft.offers = refreshed
+                draft.revision += 1
             view = draft_view(draft)
             view["conflict"] = fingerprint(stream) != fingerprint(draft.baseline)
             views.append(view)
     return sorted(views, key=lambda row: row["stream"].get("position") or 0)
+
+
+@app.get("/api/offers/{offer_id}/preview")
+def preview_offer(offer_id: int):
+    offer = kt.request("GET", f"offers/{offer_id}")
+    if offer.get("offer_type") == "local":
+        path = offer.get("local_path", "")
+        if not path.startswith("/lander/"):
+            raise HTTPException(422, "У оффера нет доступной страницы предпросмотра")
+        target = settings.keitaro_url + path
+    else:
+        target = (offer.get("action_options") or {}).get("url") or offer.get("action_payload") or ""
+    parts = urlsplit(target)
+    if parts.scheme not in {"https", "http"} or not parts.hostname:
+        raise HTTPException(422, "Этот тип оффера не поддерживает предпросмотр по URL")
+    return RedirectResponse(target)
 
 
 @app.patch("/api/campaigns/{campaign_id}/streams/{stream_id}/draft")

@@ -125,7 +125,8 @@ function statsCell(streamId, offerId) {
   const row = state.stats.rows.find((row) => Number(row.stream_id) === streamId && Number(row.offer_id) === offerId) || {};
   for (const [key, label] of [["clicks", "Клики"], ["conversions", "Конверсии"], ["revenue", "Доход"], ["cost", "Расход"], ["profit", "Прибыль"], ["roi", "ROI %"]]) {
     const line = element("div");
-    line.append(element("span", label + " "), document.createTextNode(number.format(row[key] || 0)));
+    const value = row[key] === null ? "—" : number.format(row[key] ?? 0);
+    line.append(element("span", label + " "), document.createTextNode(value));
     cell.append(line);
   }
   return cell;
@@ -156,6 +157,11 @@ function offerRow(draft, offer) {
   const row = element("tr", undefined, offer.removed ? "removed" : "");
   const title = element("td", undefined, "offer-name");
   title.append(element("small", "#" + offer.offer_id), element("div", state.offers.get(offer.offer_id) || "Оффер #" + offer.offer_id));
+  const preview = element("a", "Предпросмотр ↗");
+  preview.href = "/api/offers/" + offer.offer_id + "/preview";
+  preview.target = "_blank";
+  preview.rel = "noopener noreferrer";
+  title.append(preview);
   const share = element("td", undefined, "share");
   if (offer.removed) {
     share.textContent = "0% · удалён";
@@ -189,13 +195,19 @@ function renderStreams() {
     const title = element("div", undefined, "stream-title");
     const heading = element("div");
     heading.append(element("h3", stream.name), element("p", "#" + draft.stream_id + " · позиция " + stream.position, "hint"));
+    if (state.stats) {
+      const clicks = state.stats.rows
+        .filter((row) => Number(row.stream_id) === draft.stream_id)
+        .reduce((sum, row) => sum + Number(row.clicks || 0), 0);
+      heading.append(element("p", "Клики сегодня · " + number.format(clicks), "hint"));
+    }
     title.append(heading, element("span", draft.dirty ? "Есть изменения" : "Сохранено", "tag"));
     card.append(title);
     const body = element("div", undefined, "stream-body");
     if (draft.conflict) body.append(element("p", "Поток изменился в Keitaro. Перед сохранением обновите данные.", "notice"));
     if (stream.schema !== "landings") {
       const countries = (stream.filters || []).filter((filter) => filter.name === "country").map((filter) => filter.payload).flat();
-      body.append(element("div", (stream.action_options || {}).url || stream.action_payload || "Прямой редирект"));
+      body.append(element("div", stream.action_payload || (stream.action_options || {}).url || "Прямой редирект"));
       body.append(element("p", countries.length ? "Страны: " + countries.join(", ") : "Без фильтра по стране", "hint"));
       card.append(body);
       container.append(card);
